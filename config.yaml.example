@@ -1,0 +1,270 @@
+# =============================================================================
+# SECURE OPERATOR — Master Configuration
+# Stack: OpenClaw + NVIDIA OpenShell + NeMo-Claw + vLLM/Azure AI Foundry +
+#        Milvus/Qdrant + OTel + NeMo Guardrails
+# Version: 2.0.0
+# Install: curl -fsSL https://nvidia.com/nemoclaw.sh | bash
+# =============================================================================
+
+# =============================================================================
+# DEPLOYMENT MODE
+# =============================================================================
+# poc:        Ollama local models, sandbox via Docker subprocess, NVIDIA stack disabled
+# production: Full NVIDIA stack (OpenClaw + NeMo-Claw + OpenShell), enterprise models
+deployment_mode: poc    # poc | production
+
+# =============================================================================
+# MODULE TOGGLES
+# =============================================================================
+modules:
+  inference:     true      # Core — always true
+  vector_db:     true      # RAG retrieval
+  orchestration: true      # POC: LangGraph fallback; Prod: OpenClaw
+  sandbox:       false     # OpenShell code execution — needs NVIDIA toolkit
+  security:      false     # NeMo-Claw guardrails — needs nemoclaw daemon
+  observability: false     # OTel + guardrail spans
+  frontend:      false     # Next.js dashboard
+
+# =============================================================================
+# PROJECT
+# =============================================================================
+project:
+  name: ${PROJECT_NAME}
+  version: "2.0.0"
+  environment: ${ENVIRONMENT}
+  description: "Secure sandboxed agent with NVIDIA NeMo-Claw guardrails and OpenShell runtime"
+  compliance:
+    standard: ${COMPLIANCE_STANDARD}
+    audit_logging: ${AUDIT_LOGGING_ENABLED}
+    sandboxed_execution_audit: ${SANDBOXED_EXECUTION_AUDIT}
+
+# =============================================================================
+# INFERENCE
+# =============================================================================
+inference:
+  # --- POC: Ollama local, no API keys ---
+  poc:
+    provider: ollama
+    model: qwen3:4b                     # ~3.5 GB VRAM
+    base_url: http://localhost:11434
+    embedding:
+      model: nomic-embed-text
+      dimension: 768
+    # Alternatives:
+    # model: gemma3:4b                  # Google — strong reasoning
+    # model: phi4-mini                  # Microsoft — great for code execution POCs
+
+  # --- Production ---
+  production:
+    provider: ${INFERENCE_PROVIDER}     # vllm | azure_ai_foundry | nvidia-nemotron
+
+    vllm:
+      base_url: ${VLLM_BASE_URL}
+      api_key: ${VLLM_API_KEY}
+      model: ${VLLM_MODEL}
+      gpu_memory_utilization: 0.85
+      max_model_len: 16384
+
+    azure_ai_foundry:
+      endpoint: ${AZURE_AI_FOUNDRY_ENDPOINT}
+      api_key: ${AZURE_AI_FOUNDRY_API_KEY}
+      model: ${AZURE_AI_FOUNDRY_MODEL}
+      api_version: ${AZURE_AI_FOUNDRY_API_VERSION}
+
+    nvidia_nemotron:
+      nim_url: ${NEMOTRON_NIM_URL}
+      api_key: ${NEMOTRON_NIM_API_KEY}
+      model: ${NEMOTRON_MODEL}
+
+    embedding:
+      model: ${EMBEDDING_MODEL}
+      dimension: ${EMBEDDING_DIMENSION}
+
+  parameters:
+    temperature: ${INFERENCE_TEMPERATURE}
+    max_tokens: ${INFERENCE_MAX_TOKENS}
+    timeout_seconds: ${INFERENCE_TIMEOUT_SECONDS}
+
+# =============================================================================
+# ORCHESTRATION
+# =============================================================================
+orchestration:
+  # POC: uses LangGraph directly (no OpenClaw needed)
+  # Production: uses OpenClaw with full agent runtime
+  poc:
+    framework: langgraph
+    langgraph:
+      checkpointer: memory              # In-memory; no Postgres needed
+      max_recursion_limit: 15
+      enable_streaming: true
+
+  production:
+    framework: openclaw
+    openclaw:
+      workspace_dir: ${OPENCLAW_WORKSPACE_DIR}
+      log_level: ${OPENCLAW_LOG_LEVEL}
+      max_iterations: ${OPENCLAW_MAX_ITERATIONS}
+      tool_timeout_seconds: ${OPENCLAW_TOOL_TIMEOUT_SECONDS}
+      self_evolution:
+        enabled: true
+        max_skill_creation_per_session: 5
+        skill_persistence: true
+        skill_store_path: ./data/skills
+
+# =============================================================================
+# SANDBOX — Code Execution (requires modules.sandbox: true)
+# =============================================================================
+sandbox:
+  # POC: uses a simple Docker subprocess (no NVIDIA toolkit needed)
+  # Production: NVIDIA OpenShell with full syscall filtering
+  poc:
+    runtime: docker-subprocess
+    resource_limits:
+      max_memory_mb: 512
+      max_cpu_cores: 1
+      max_execution_time_seconds: 30
+    network_policy: isolated
+
+  production:
+    runtime: nvidia-openshell
+    openshell:
+      enabled: ${OPENSHELL_ENABLED}
+      container_image: ${OPENSHELL_CONTAINER_IMAGE}
+      resource_limits:
+        max_memory_mb: ${OPENSHELL_MAX_MEMORY_MB}
+        max_cpu_cores: ${OPENSHELL_MAX_CPU_CORES}
+        max_disk_mb: 1024
+        max_execution_time_seconds: ${OPENSHELL_EXECUTION_TIMEOUT}
+      network_policy: ${OPENSHELL_NETWORK_POLICY}
+      allowed_paths:
+        read:
+          - /workspace/data
+          - /workspace/uploads
+        write:
+          - /workspace/outputs
+          - /tmp
+      seccomp_profile: strict
+
+# =============================================================================
+# SECURITY — NeMo-Claw (requires modules.security: true)
+# =============================================================================
+security:
+  nemoclaw:
+    enabled: ${NEMOCLAW_ENABLED}
+    policy_path: ${NEMOCLAW_POLICY_PATH}
+    privacy_mode: ${NEMOCLAW_PRIVACY_MODE}
+    privacy_router:
+      enabled: true
+      cloud_allowed_for_public_data: true
+      cloud_blocked_for_pii: true
+      local_model_fallback: true
+    guardrails:
+      pii_redaction: ${NEMOCLAW_PII_REDACTION}
+      jailbreak_detection: ${NEMOCLAW_JAILBREAK_DETECTION}
+      output_filtering: ${NEMOCLAW_OUTPUT_FILTERING}
+      jailbreak_threshold: 0.80
+      pii_confidence_threshold: 0.85
+
+  nemo_guardrails:
+    enabled: ${NEMO_GUARDRAILS_ENABLED}
+    config_path: ${NEMO_GUARDRAILS_CONFIG_PATH}
+    embedding_model: ${NEMO_GUARDRAILS_EMBEDDING_MODEL}
+    active_rails:
+      - input
+      - output
+      - dialog
+
+  guardrails_otel_export: ${NEMOCLAW_LOGS_TO_OTEL}
+
+# =============================================================================
+# VECTOR DATABASE
+# =============================================================================
+vector_db:
+  poc:
+    provider: chroma
+    chroma:
+      mode: in-memory
+      persist_directory: ./data/chroma
+      collection_name: secure_docs
+
+  production:
+    provider: ${VECTOR_DB_PROVIDER}     # milvus | qdrant
+    milvus:
+      host: ${MILVUS_HOST}
+      port: ${MILVUS_PORT}
+      user: ${MILVUS_USER}
+      password: ${MILVUS_PASSWORD}
+      collection: ${MILVUS_COLLECTION}
+      index_type: HNSW
+      metric_type: COSINE
+    qdrant:
+      host: ${QDRANT_HOST}
+      port: ${QDRANT_PORT}
+      api_key: ${QDRANT_API_KEY}
+      collection: ${QDRANT_COLLECTION_NAME}
+
+  search:
+    limit: 10
+    score_threshold: 0.70
+    with_payload: true
+
+# =============================================================================
+# TOOLS — Agent tool registry
+# =============================================================================
+tools:
+  enabled: ${ENABLED_TOOLS}
+
+  python_interpreter:
+    enabled: ${PYTHON_SANDBOX_ENABLED}
+    runtime: openshell
+    allowed_packages: ${PYTHON_ALLOWED_PACKAGES}
+    max_execution_seconds: 60
+
+  file_reader:
+    enabled: true
+    allowed_extensions: [".pdf", ".xlsx", ".csv", ".txt", ".json"]
+    max_file_size_mb: 50
+
+  web_search:
+    enabled: true
+    provider: brave
+    max_results: 5
+    anonymous_mode: true
+
+  sap_connector:
+    enabled: false
+    host: ${SAP_HOST}
+    client: ${SAP_CLIENT}
+    user: ${SAP_USER}
+    password: ${SAP_PASSWORD}
+
+# =============================================================================
+# OBSERVABILITY (requires modules.observability: true)
+# =============================================================================
+observability:
+  otel:
+    enabled: ${OTEL_ENABLED}
+    service_name: ${OTEL_SERVICE_NAME}
+    exporter:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+      protocol: ${OTEL_EXPORTER_OTLP_PROTOCOL}
+    trace_sample_rate: 1.0
+    nemoclaw_events_as_spans: ${NEMOCLAW_LOGS_TO_OTEL}
+
+  logging:
+    level: ${LOG_LEVEL}
+    format: json
+    include_trace_id: true
+    redact_pii_in_logs: true
+
+# =============================================================================
+# API SERVER
+# =============================================================================
+api:
+  host: ${API_HOST}
+  port: ${API_PORT}
+  workers: ${API_WORKERS}
+  cors:
+    origins: ${API_CORS_ORIGINS}
+  max_request_size_mb: 50
+  request_timeout_seconds: 300
